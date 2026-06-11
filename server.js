@@ -60,8 +60,16 @@ function linearRegression(points) {
 }
 
 function exponentialRegression(points) {
+  const invalidPoints = points.filter(p => p.y <= 0);
+  if (invalidPoints.length > 0) {
+    const indices = invalidPoints.map((_, i) => {
+      const idx = points.indexOf(invalidPoints[i]) + 1;
+      return `#${idx}(y=${invalidPoints[i].y})`;
+    }).join(', ');
+    throw new Error(`指数拟合要求所有Y值必须大于0，存在非法点: ${indices}`);
+  }
   const n = points.length;
-  const logPoints = points.map(p => ({ x: p.x, y: Math.log(Math.max(p.y, 1e-10)) }));
+  const logPoints = points.map(p => ({ x: p.x, y: Math.log(p.y) }));
   const linearResult = linearRegression(logPoints);
   return { a: Math.exp(linearResult.b), b: linearResult.a };
 }

@@ -1,6 +1,9 @@
 let fitChart = null;
 let residualChart = null;
 let currentResultId = null;
+let currentDatasetId = null;
+let isDirty = false;
+
 const modelTypeLabels = {
   linear: '线性模型',
   exponential: '指数模型',
@@ -14,6 +17,30 @@ function showToast(message, type = 'info') {
   setTimeout(() => {
     toast.classList.remove('show');
   }, 3000);
+}
+
+function updateDatasetButtons() {
+  const updateBtn = document.getElementById('updateDatasetBtn');
+  if (currentDatasetId) {
+    updateBtn.style.display = 'block';
+    if (isDirty) {
+      updateBtn.textContent = '💾 更新当前数据集 *';
+    } else {
+      updateBtn.textContent = '💾 更新当前数据集';
+    }
+  } else {
+    updateBtn.style.display = 'none';
+  }
+}
+
+function markDirty() {
+  isDirty = true;
+  updateDatasetButtons();
+}
+
+function clearDirty() {
+  isDirty = false;
+  updateDatasetButtons();
 }
 
 function initCharts() {
@@ -171,6 +198,10 @@ function addDataRow(x = '', y = '') {
   tr.querySelector('.delete-row-btn').addEventListener('click', () => {
     tr.remove();
     updateRowNumbers();
+    markDirty();
+  });
+  tr.querySelectorAll('input').forEach(input => {
+    input.addEventListener('input', markDirty);
   });
   tbody.appendChild(tr);
 }
@@ -187,6 +218,28 @@ function clearDataTable() {
   tbody.innerHTML = '';
   for (let i = 0; i < 5; i++) {
     addDataRow();
+  }
+  currentDatasetId = null;
+  currentResultId = null;
+  clearDirty();
+  resetDisplay();
+}
+
+function resetDisplay() {
+  document.getElementById('metricR2').textContent = '—';
+  document.getElementById('metricMSE').textContent = '—';
+  document.getElementById('metricRMSE').textContent = '—';
+  document.getElementById('metricMAE').textContent = '—';
+  document.getElementById('eqFormula').textContent = '等待拟合...';
+  document.getElementById('outliersSection').style.display = 'none';
+
+  if (fitChart) {
+    fitChart.data.datasets.forEach(ds => ds.data = []);
+    fitChart.update();
+  }
+  if (residualChart) {
+    residualChart.data.datasets.forEach(ds => ds.data = []);
+    residualChart.update();
   }
 }
 
@@ -228,6 +281,10 @@ function loadSampleData() {
   ];
   setTableData(samples);
   document.getElementById('datasetName').value = '示例实验数据';
+  currentDatasetId = null;
+  currentResultId = null;
+  resetDisplay();
+  clearDirty();
   showToast('已加载示例数据', 'success');
 }
 
@@ -250,7 +307,7 @@ async function performFit() {
     const res = await fetch('/api/fit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ points, modelType, datasetName })
+      body: JSON.stringify({ points, modelType, datasetName, datasetId: currentDatasetId })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '拟合失败');
@@ -367,6 +424,8 @@ async function loadHistoryItem(id) {
     setTableData(data.points);
     displayFitResult(data);
     currentResultId = id;
+    currentDatasetId = data.datasetId || null;
+    clearDirty();
     showToast('已加载历史记录', 'success');
   } catch (err) {
     showToast(err.message, 'error');
@@ -378,6 +437,9 @@ async function deleteHistoryItem(id) {
   try {
     const res = await fetch(`/api/history/${id}`, { method: 'DELETE' });
     if (!res.ok) throw new Error('删除失败');
+    if (currentResultId === id) {
+      currentResultId = null;
+    }
     showToast('已删除', 'success');
     loadHistory();
   } catch (err) {
@@ -430,7 +492,39 @@ async function saveCurrentDataset() {
       body: JSON.stringify({ name, points })
     });
     if (!res.ok) throw new Error('保存失败');
-    showToast('数据集已保存', 'success');
+    const dataset = await res.json();
+    currentDatasetId = dataset.id;
+    clearDirty();
+    showToast('已另存为新数据集', 'success');
+    loadDatasets();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function updateCurrentDataset() {
+  if (!currentDatasetId) {
+    showToast('没有可更新的数据集，请先加载或另存为', 'error');
+    return;
+  }
+
+  const points = getTableData();
+  const name = document.getElementById('datasetName').value || '未命名数据集';
+
+  if (points.length < 2) {
+    showToast('请至少输入2个有效数据点', 'error');
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/datasets/${currentDatasetId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, points })
+    });
+    if (!res.ok) throw new Error('更新失败');
+    clearDirty();
+    showToast('数据集已更新', 'success');
     loadDatasets();
   } catch (err) {
     showToast(err.message, 'error');
@@ -446,6 +540,10 @@ async function loadDataset(id) {
 
     document.getElementById('datasetName').value = dataset.name;
     setTableData(dataset.points);
+    currentDatasetId = id;
+    currentResultId = null;
+    resetDisplay();
+    clearDirty();
     showToast('已加载数据集', 'success');
   } catch (err) {
     showToast(err.message, 'error');
@@ -457,6 +555,10 @@ async function deleteDataset(id) {
   try {
     const res = await fetch(`/api/datasets/${id}`, { method: 'DELETE' });
     if (!res.ok) throw new Error('删除失败');
+    if (currentDatasetId === id) {
+      currentDatasetId = null;
+      updateDatasetButtons();
+    }
     showToast('已删除', 'success');
     loadDatasets();
   } catch (err) {
@@ -477,13 +579,18 @@ function initTabs() {
 }
 
 function initEventListeners() {
-  document.getElementById('addRowBtn').addEventListener('click', () => addDataRow());
+  document.getElementById('addRowBtn').addEventListener('click', () => {
+    addDataRow();
+    markDirty();
+  });
   document.getElementById('clearDataBtn').addEventListener('click', () => {
     if (confirm('确定清空所有数据吗？')) clearDataTable();
   });
   document.getElementById('loadSampleBtn').addEventListener('click', loadSampleData);
   document.getElementById('fitBtn').addEventListener('click', performFit);
   document.getElementById('saveDatasetBtn').addEventListener('click', saveCurrentDataset);
+  document.getElementById('updateDatasetBtn').addEventListener('click', updateCurrentDataset);
+  document.getElementById('datasetName').addEventListener('input', markDirty);
 }
 
 function init() {
@@ -493,6 +600,7 @@ function init() {
   clearDataTable();
   loadHistory();
   loadDatasets();
+  updateDatasetButtons();
 }
 
 document.addEventListener('DOMContentLoaded', init);
